@@ -3,7 +3,7 @@
 **Date:** 2026-07-06
 **Deciders:** Platform Architect, Senior Analyst Lead
 **Technical Story:** TS-12 (AI Assistance and Human Oversight)
-**Related ADRs:** ADR-001 (Platform Principles), ADR-008 (Classification Confidence Engine)
+**Related ADRs:** ADR-001 (Platform Principles), ADR-008 (Workflow State Model)
 
 ---
 

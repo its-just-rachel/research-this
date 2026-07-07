@@ -206,7 +206,7 @@ CREATE TABLE enrichments (
   -- ID of the enriched object (signal, group, cluster, profile, etc.)
   object_type     TEXT NOT NULL CHECK (object_type IN (
                     'signal', 'corroboration_group', 'cluster',
-                    'tech_profile', 'solution_candidate', 'advisory'
+                    'tech_profile', 'solution_candidate', 'advisory', 'market_report'
                   )),
   enrichment_type TEXT NOT NULL CHECK (enrichment_type IN (
                     'entity_extraction', 'source_credibility',
@@ -401,7 +401,7 @@ CREATE TABLE match_sets (
   object_id         UUID NOT NULL,
   object_type       TEXT NOT NULL CHECK (object_type IN (
                       'signal', 'corroboration_group', 'cluster',
-                      'tech_profile', 'solution_candidate'
+                      'tech_profile', 'solution_candidate', 'market_report'
                     )),
   axis              TEXT NOT NULL CHECK (axis IN (
                       'neighborhood', 'domain_area', 'tech_type', 'candidate_type'
@@ -582,8 +582,7 @@ CREATE TABLE tech_profiles (
   fidelity_rationale    TEXT,
   fidelity_trend        TEXT CHECK (fidelity_trend IN ('rising', 'stable', 'declining', 'unknown')),
 
-  availability_level    INTEGER CHECK (availability_level BETWEEN 0 AND 5),
-  -- composite availability score: min(market_availability, firm_access) per ADR-006
+  availability_level    INTEGER GENERATED ALWAYS AS (LEAST(COALESCE(market_availability, 0), COALESCE(firm_access, 5))) STORED,
   availability_rationale TEXT,
   availability_trend    TEXT CHECK (availability_trend IN ('rising', 'stable', 'declining', 'unknown')),
 
@@ -877,6 +876,70 @@ CREATE TABLE advisories (
 
 ---
 
+-- Market Reports
+
+### `market_reports`
+
+A Market Report is a living, versioned, prediction-bearing research document scoped to a Neighborhood or Domain Area. See ADR-016 for the full rationale and distinction from Advisories and Technology Profiles.
+
+```sql
+CREATE TABLE market_reports (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title                 TEXT NOT NULL,
+  topic_scope_type      TEXT NOT NULL CHECK (topic_scope_type IN ('neighborhood', 'domain_area')),
+  topic_scope_ref       TEXT NOT NULL,             -- the neighborhood or domain_area name
+  current_version       INTEGER NOT NULL DEFAULT 1,
+  summary               TEXT NOT NULL,
+  body                  TEXT,                      -- full report body; may be a sensitive_ref_id pointer per ADR-012
+  prediction_horizon    DATE,                      -- target date by which predictions are expected to resolve
+  state                 TEXT NOT NULL DEFAULT 'draft'
+                        CHECK (state IN ('draft', 'under_review', 'published', 'archived')),
+  evidence_basis        UUID[] NOT NULL DEFAULT '{}',
+  watch_count           INTEGER NOT NULL DEFAULT 0,
+  created_by            UUID NOT NULL,
+  published_at          TIMESTAMPTZ,
+  last_updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at         TIMESTAMPTZ,
+  superseded_by         UUID REFERENCES market_reports(id),
+  is_active             BOOLEAN NOT NULL GENERATED ALWAYS AS (superseded_at IS NULL) STORED,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON market_reports (topic_scope_type, topic_scope_ref);
+CREATE INDEX ON market_reports (state);
+CREATE INDEX ON market_reports (superseded_at) WHERE superseded_at IS NULL;
+CREATE INDEX ON market_reports (created_by);
+```
+
+### `market_report_predictions`
+
+Supporting table for predictions attached to a Market Report.
+
+```sql
+CREATE TABLE market_report_predictions (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  market_report_id      UUID NOT NULL REFERENCES market_reports(id),
+  claim                 TEXT NOT NULL,
+  prediction_date       DATE NOT NULL,
+  resolution_date       DATE,
+  resolution_status     TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (resolution_status IN (
+                          'pending', 'confirmed', 'refuted', 'partially_confirmed'
+                        )),
+  resolution_evidence   UUID[],                   -- signal/finding UUIDs that resolved this prediction
+  resolution_note       TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON market_report_predictions (market_report_id);
+CREATE INDEX ON market_report_predictions (resolution_status);
+CREATE INDEX ON market_report_predictions (prediction_date);
+```
+
+> **Five-timestamp compliance (ADR-015):** `market_reports` is an analyst-authored entity type, not an ingested signal. `event_time`, `captured_at`, and `ingested_at` do not apply and are omitted. `created_at` is present as standard. `valid_from` is represented by `last_updated_at` for the living-document update model. `superseded_at` and `superseded_by` implement the ADR-005 immutable-but-supersedable pattern at the version level. See ADR-016 for the formal carve-out rationale.
+
+---
+
 ## Relationship tables
 
 ### `object_relationships`
@@ -897,7 +960,11 @@ CREATE TABLE object_relationships (
                     'contains', 'related_to', 'contributes_to', 'assigned_to',
                     'produces', 'parent_of', 'child_of', 'enables', 'dependent_on'
                   )),
-  confidence      NUMERIC(3,2) CHECK (confidence BETWEEN 0 AND 1),
+  -- NOTE: The following types are used in the implementation but are pending
+  -- formal governance entry in ADR-003: contains, related_to, contributes_to,
+  -- assigned_to, produces, parent_of, child_of, enables, dependent_on.
+  -- These must be submitted for ADR-003 vocabulary review before v1.0.
+  confidence      NUMERIC(3,2) NOT NULL CHECK (confidence BETWEEN 0 AND 1),
   evidence_basis  UUID[] NOT NULL DEFAULT '{}',
   valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
   superseded_at   TIMESTAMPTZ,
@@ -905,7 +972,7 @@ CREATE TABLE object_relationships (
   review_status   TEXT NOT NULL DEFAULT 'pending'
                   CHECK (review_status IN ('pending', 'accepted', 'challenged', 'retracted')),
   rationale       TEXT,
-  created_by      TEXT NOT NULL,
+  created_by      UUID NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

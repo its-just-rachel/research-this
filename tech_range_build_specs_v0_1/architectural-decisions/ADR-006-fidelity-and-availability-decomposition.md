@@ -165,7 +165,7 @@ When sub-dimensions have not yet been assessed, null values require careful hand
 - If `market_availability` is set but `firm_access` is null: composite = `market_availability` with a confidence penalty applied (firm access unknown, assume bottleneck may exist)
 - If both are set: composite = `LEAST(market_availability, firm_access)`
 
-> **DECISION NEEDED —** Should `availability_level` be auto-computed as a generated column, or remain analyst-set? *Recommendation: implement as a generated column: `availability_level INTEGER GENERATED ALWAYS AS (LEAST(COALESCE(market_availability, 0), COALESCE(firm_access, 5))) STORED`. Note: COALESCE behavior for null sub-dimensions needs explicit review — `COALESCE(market_availability, 0)` treats unassessed market availability as 0 (conservative); `COALESCE(firm_access, 5)` treats unassessed firm access as 5 (optimistic, meaning market_availability drives the composite when firm_access is unknown). These defaults should be validated against analyst expectations before finalizing.*
+> **Resolved (2026-07-07):** `availability_level` is implemented as a GENERATED ALWAYS computed column: `GENERATED ALWAYS AS (LEAST(COALESCE(market_availability, 0), COALESCE(firm_access, 5))) STORED`. This enforces the composite formula at the database level without requiring application logic. TS-02 updated accordingly.
 
 ---
 
@@ -221,7 +221,7 @@ This action routing logic is computed at the application layer and surfaces in t
 
 ## Open Decisions
 
-> **DECISION NEEDED —** Should `availability_level` be auto-computed as a generated column or remain analyst-set? *Recommendation: generated column using `GENERATED ALWAYS AS (LEAST(COALESCE(market_availability, 0), COALESCE(firm_access, 5))) STORED`; but the COALESCE defaults for null sub-dimensions must be explicitly validated with the analyst team before the migration is finalized, as they encode a policy choice about how to handle partially-assessed profiles.*
+> **Resolved (2026-07-07):** `availability_level` is implemented as a GENERATED ALWAYS computed column: `GENERATED ALWAYS AS (LEAST(COALESCE(market_availability, 0), COALESCE(firm_access, 5))) STORED`. This enforces the composite formula at the database level without requiring application logic. TS-02 updated accordingly.
 
 > **DECISION NEEDED —** Is Procurement Readiness in scope for MVP, or deferred to Phase 2? *Recommendation: defer to Phase 2. Procurement Readiness requires integration with contracting, acquisition authority, and compliance data that is unlikely to be available at launch. The schema column is reserved and nullable; the UI assessment flow omits it in Phase 1. Re-evaluate when contracting/compliance data integration is scoped.*
 

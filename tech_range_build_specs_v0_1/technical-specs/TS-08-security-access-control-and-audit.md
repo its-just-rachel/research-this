@@ -90,6 +90,34 @@ Service accounts authenticate via API keys. API keys are:
 - Stored as hashed values in the database; the plaintext key is shown once at issuance.
 - Logged on every use in the audit log with `actor_type = 'service_account'`.
 
+### 4.5 Per-object-type access control matrix
+
+The role definitions in §3 describe access at a high level. This matrix specifies per-object permissions for entities not fully covered by the general descriptions above. DS specs (role summary tables) and TS-06 (state machine actors) are authoritative for UI-layer behavior; this matrix governs API-layer enforcement.
+
+**Market Reports** (`market_reports`)
+
+| Role | Read | Create / Edit draft | Submit for review | Publish / Withdraw | Add observations |
+|---|---|---|---|---|---|
+| `viewer` | Published only (`state = 'published'`, `is_active = true`) | No | No | No | No |
+| `analyst` | All states | No | No | No | Yes |
+| `senior_analyst` | All states | Yes (`draft`, `under_review`) | Yes | No | Yes |
+| `architect` | All states | Yes | Yes | Yes | Yes |
+| `admin` | All states | No (admin is not an intelligence role) | No | No | No |
+| `service_account` | Scoped by key | No | No | No | No |
+
+**Prototypes** (`prototypes`)
+
+| Role | Read | Create (direct request) | Edit scope / criteria / plans | Log progress entries | Confirm scope (`scoped → in_progress`) | Mark complete | Abandon |
+|---|---|---|---|---|---|---|---|
+| `viewer` | `in_progress`, `complete` only | No | No | No | No | No | No |
+| `analyst` | All states | Yes | Yes (while `scoped` or `in_progress`) | Yes | No | No | No |
+| `senior_analyst` | All states | Yes | Yes | Yes | Yes | Yes | No |
+| `architect` | All states | Yes | Yes | Yes | Yes | Yes | Yes |
+| `admin` | All states | No | No | No | No | No | No |
+| `service_account` | No | No | No | No | No | No | No |
+
+> **Note on viewer access to prototypes:** `viewer` access to `in_progress` and `complete` prototypes is an intentional product decision to give leadership consumers visibility into the active prototype portfolio. This extends the default viewer scope (published Advisories only) and should be reviewed during security design review.
+
 ---
 
 ## 5. Sensitive content handling
@@ -158,6 +186,8 @@ The following actions must generate an audit log entry. This list is exhaustive 
 | Analyst corrections | Every human override of a CCE match or classification |
 | Classification actions | Every initial classification, reclassification, and classification override |
 | Advisory lifecycle | Draft created, approved, published, superseded, withdrawn |
+| Market Report lifecycle | Draft created, submitted for review, published, withdrawn, superseded (new version created) |
+| Prototype lifecycle | Request created, scope confirmed (scoped → in_progress), marked complete, abandoned |
 | Sensitive content | Pointer created, content accessed (read), content withdrawn, access grant changed, failed access attempt |
 | Authentication | Login (success and failure), logout, session expiry, API key used |
 | Role and access changes | Role assignment, role change, user deactivation, API key issuance and revocation |
@@ -171,7 +201,7 @@ CREATE TABLE audit_log (
   actor_type    TEXT         NOT NULL,       -- 'user', 'service_account', 'system'
   action        TEXT         NOT NULL,       -- e.g. 'state_transition', 'match_set_write', 'sensitive_content_read'
   object_id     UUID,                        -- ID of the affected record, if applicable
-  object_type   TEXT,                        -- e.g. 'signal', 'tech_entity', 'advisory', 'match_set'
+  object_type   TEXT,                        -- e.g. 'signal', 'tech_entity', 'advisory', 'match_set', 'market_report', 'prototype'
   before_state  JSONB,                       -- snapshot of relevant fields before action
   after_state   JSONB,                       -- snapshot of relevant fields after action
   ip_address    INET,

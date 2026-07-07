@@ -232,6 +232,14 @@ CREATE TABLE watchlists (
 | `burst_detected` | A Neighborhood or Cluster in the watchlist scope enters `is_bursting = true` |
 | `boundary_case_created` | A new boundary case is created on a watched Technology Profile |
 | `advisory_published` | A new Advisory is published that overlaps with watchlist scope |
+| `market_report_version_published` | A new version of a watched Market Report transitions to `published` (is_active = true, superseded_by IS NULL) |
+
+**Market report new-version alert**
+
+- **Trigger:** A Market Report's state transitions to `published` where `is_active = true` and `superseded_by IS NULL` (i.e., this is the current active version, not a historical record)
+- **Payload:** `{ object_type: 'market_report', object_id, title, version: current_version, topic_scope_ref }`
+- **Recipients:** All users with a watchlist entry for this market_report (`object_type = 'market_report'`, `object_id = <market_report_id>`)
+- **Alert type:** `market_report_version_published`
 
 ---
 
@@ -269,12 +277,16 @@ CREATE TABLE alerts (
   alert_type        TEXT NOT NULL CHECK (alert_type IN (
                       'new_match', 'state_change', 'confidence_change',
                       'burst_detected', 'boundary_case_created',
-                      'advisory_published'
+                      'advisory_published', 'market_report_version_published'
                     )),
   object_id         UUID,
-  object_type       TEXT,
+  object_type       TEXT CHECK (object_type IN (
+                      'signal', 'tech_profile', 'cluster', 'advisory',
+                      'market_report'
+                    )),
   message           TEXT NOT NULL,
-  read              BOOLEAN NOT NULL DEFAULT false,
+  read              BOOLEAN   NOT NULL DEFAULT false,
+  read_at           TIMESTAMPTZ,                       -- set when read = true
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

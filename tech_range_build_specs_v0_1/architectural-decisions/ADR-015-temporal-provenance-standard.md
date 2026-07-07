@@ -35,6 +35,18 @@ The platform also includes classifiable records — match_sets, state_transition
 
 All entity tables in Tech Range adopt a **five-timestamp standard**. Classifiable records additionally carry **bi-temporal validity columns**. No exceptions without explicit ADR amendment.
 
+### Amendment — Analyst-Authored Entities (2026-07-07)
+
+**Scope exception for content-creation workflows:** Entity tables whose records are authored directly by human analysts (rather than ingested from external sources) are exempt from `event_time`, `captured_at`, and `ingested_at`. These three timestamps are meaningful only for externally-sourced signals.
+
+**Applicable to:** `market_reports`, `market_report_predictions`, `advisories`, `findings`, `solution_candidates`, `prototypes`.
+
+**Required timestamps for analyst-authored entities:** `created_at`, `updated_at` (or `last_updated_at`).
+
+**Not applicable:** `signal_state`, `source`-linked records, enrichment records — these remain subject to the full five-timestamp standard.
+
+This amendment was prompted by ADR-016 (Market Reports Entity). The full five-timestamp standard continues to apply to all ingested and system-generated records.
+
 ### The Five Timestamps
 
 These five columns appear on every entity table. Their semantics are fixed and must not be reused for other purposes.

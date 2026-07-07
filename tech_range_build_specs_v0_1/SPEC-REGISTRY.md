@@ -11,16 +11,19 @@ This registry lists the design specs, technical specs, and architectural decisio
 
 | ID | Spec | Purpose | Build priority |
 |---|---|---|---|
-| DS-01 | Analyst Workspace | Defines the primary analyst experience across Surface, Research, Solution, Prototype, and Advise. | High |
-| DS-02 | Signal Review and Triage | Defines how incoming Signals are reviewed, enriched, compared, assigned, grouped, and escalated. | High |
-| DS-03 | Comparative Classification UX | Defines how primary/secondary matches, confidence, differentiation, and reshuffling are shown to users. | High |
-| DS-04 | Technology Profile Workspace | Defines the workspace for durable knowledge objects, evidence lineage, profile state, and governance. | High |
-| DS-05 | Solution Candidate Workflow | Defines how proposed engagement paths are created, reviewed, approved, and handed off. | High |
+| DS-01 | Platform Shell and Overview | Defines the six-tab primary nav, utility nav, conditional display framework (role capability matrix), Overview tab (snapshot modal, topics highlight strip, animated radar, KPI dashboard). | High |
+| DS-02 | Surface | Defines the Surface tab: ReGraph node graph (semantic zoom, signal burst detection), KronoGraph timebar, signal microblog list, TL/DR bottom drawer (archive + paste-a-link + configure-generate modes). | High |
+| DS-03 | Comparative Classification UX | Defines how primary/secondary matches, confidence, differentiation, and reshuffling are shown to users. Reusable component embedded in Surface, Research, and Solution. | High |
+| DS-04 | Research | Defines the Research tab: full interactive radar (DS-07 embed), knowledge catalog (Tech Profiles, Market Reports, Findings, Observations, Signal Alerts), Technology Profile detail panel, Market Report detail panel. | High |
+| DS-05 | Solution Candidate Workflow | Defines how proposed engagement paths are created, reviewed, approved, and handed off to Prototype. | High |
 | DS-06 | Advisory and Briefing Workflow | Defines how evidence-backed Advisories and recurring briefs are generated, reviewed, and published. | Medium |
-| DS-07 | Radar and Portfolio Views | Defines radar, portfolio, matrix, and filter views without making visualization the master model. | Medium |
+| DS-07 | Radar and Portfolio Views | Defines the full interactive radar (Radar/Matrix/Timeline/Neighborhood Map views) embedded in DS-04 Research. | Medium |
 | DS-08 | Governance and Review Queues | Defines queues for analyst review, exceptions, Emerging review, profile creation, reclassification, and approvals. | High |
 | DS-09 | Signal Archaeology Workflow | Defines retrospective analysis workflows for intentional injection and surprise reviews. | Medium |
 | DS-10 | Extension Boundary UX | Defines how World Models, Wargaming, Red Teaming, Forecasting, and Simulation appear as adjacent extensions. | Low / Later |
+| DS-11 | User Management | Defines the admin-only utility nav page: user list, invite flow, role management, deactivation, audit trail, service accounts. | Medium |
+| DS-12 | Profile and Preferences | Defines the all-user utility nav page: personal info, topics of interest (highlight strip driver), specialties, notification preferences, watchlist summary. | Medium |
+| DS-13 | Prototype | Defines the Prototype tab: prototype request/kickoff workflow, active and completed prototype list, status tracking, role-differentiated actions. **Not yet written.** | High |
 
 ## Technical specs
 
@@ -58,6 +61,7 @@ This registry lists the design specs, technical specs, and architectural decisio
 | ADR-013 | Advisory publication standard | Defines evidence requirements and approval flow for strategic outputs. | Medium |
 | ADR-014 | Source credibility and trust model | Determines source scoring, credibility, and enrichment trust levels. | Medium |
 | ADR-015 | Event-time and temporal provenance standard | Enables signal archaeology and surprise analysis. | High |
+| ADR-016 | Market Reports entity | Introduces market_reports as an 18th canonical entity — living, versioned, topic-scoped research documents with forward-looking predictions tracked over time. | High |
 
 ## Immediate recommendation
 

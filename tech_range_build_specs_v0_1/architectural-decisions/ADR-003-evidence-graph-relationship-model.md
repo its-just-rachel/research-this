@@ -137,6 +137,24 @@ The following relationship types are defined in v0.1. They are enforced by a `CH
 
 New relationship types must go through the governance process described in the DECISION NEEDED section below. Undocumented types added directly to production data will fail validation.
 
+### Pending Governance Review
+
+The following relationship types are present in the TS-02 implementation but have not yet been formally admitted to this vocabulary. They must be reviewed and either ratified or removed before v1.0:
+
+| Type | Provisional use |
+|---|---|
+| `contains` | Cluster → signal membership |
+| `related_to` | General weak association |
+| `contributes_to` | Signal → finding contribution |
+| `assigned_to` | Signal → source assignment |
+| `produces` | Pipeline stage → output |
+| `parent_of` | Hierarchical cluster nesting |
+| `child_of` | Hierarchical cluster nesting (inverse) |
+| `enables` | Tech profile → solution candidate enablement |
+| `dependent_on` | Solution candidate dependency |
+
+Until ratified, these types may be used in development but will be flagged in ADR-003 compliance checks.
+
 ---
 
 ## Disconfirmation

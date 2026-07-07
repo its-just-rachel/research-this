@@ -574,7 +574,7 @@ An Advisory is a curated, evidence-backed intelligence product delivered to stak
 | From State | To State | Trigger | Actor Required | Preconditions | Side Effects |
 |---|---|---|---|---|---|
 | *(none)* | `assembling` | Senior analyst creates advisory | `senior_analyst` | None | None |
-| `assembling` | `review` | Senior analyst submits for review | `senior_analyst` | Evidence chain complete (see below); ≥ 1 published Finding linked; all linked Technology Profiles in `active` state; reason optional | Create review queue entry for architect |
+| `assembling` | `review` | Senior analyst submits for review | `senior_analyst` | Evidence chain complete (see below); evidence chain completeness check passes (per TS-05 §4.4); ≥ 1 published Finding linked; all linked Technology Profiles in `active` state; reason optional | Create review queue entry for architect |
 | `review` | `approved` | Architect approves | `architect` | Review completed; reason provided | Notify senior analyst; add to publication queue for leadership |
 | `review` | `assembling` | Architect returns for revision | `architect` | Reason required | Close queue entry; notify senior analyst with feedback |
 | `review` | `withdrawn` | Architect or leadership withdraws during review | `architect` or `leadership` | Reason required | Close queue entry; notify senior analyst |
@@ -589,6 +589,28 @@ An Advisory is a curated, evidence-backed intelligence product delivered to stak
 4. No linked Findings are in `withdrawn` state.
 
 **Approval authority:** Architect can approve and publish. Leadership can authorize publication or withdraw post-publication. Senior analysts cannot self-approve — they require architect review.
+
+---
+
+### 4.9 Market Reports
+
+A Market Report is a living, versioned research document scoped to a Neighborhood or Domain Area (introduced in ADR-016).
+
+**States:** `draft` → `under_review` → `published`
+
+Additional transitions:
+- `published` → `withdrawn` (manual withdrawal by `architect+`)
+- `published` → `superseded` (system-set when a new version is created via `POST /v1/market-reports/{id}/new-version`)
+
+**Transition table:**
+
+| From | To | Actor | Preconditions | System action |
+|---|---|---|---|---|
+| `draft` | `under_review` | `senior_analyst+` | Body and topic_scope_ref present | Creates review_queue entry (queue_type: `peer_review`) |
+| `under_review` | `published` | `architect+` | Peer review complete | Sets published_at; notifies watchers |
+| `under_review` | `draft` | `architect+` | Reviewer requests revision | Notifies author |
+| `published` | `withdrawn` | `architect+` | — | Sets withdrawn_at; marks is_active = false |
+| `published` | `superseded` | system | New version created | Sets superseded_at, superseded_by on old record; new record starts in draft |
 
 ---
 
@@ -617,7 +639,20 @@ CREATE TABLE review_queue (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   object_id       UUID        NOT NULL,
   object_type     TEXT        NOT NULL,
-  queue_type      TEXT        NOT NULL,
+  queue_type      TEXT        NOT NULL CHECK (queue_type IN (
+                    'boundary_case_review',
+                    'disputed_classification',
+                    'reclassification_request',
+                    'group_review',
+                    'cluster_review',
+                    'profile_review',
+                    'profile_creation_request',
+                    'solution_review',
+                    'peer_review',
+                    'advisory_review',
+                    'needs_internal_answer',
+                    'escalation'
+                  )),
   assigned_to     UUID,                   -- user ID; NULL if unassigned
   assigned_role   TEXT        NOT NULL,   -- role responsible for resolution
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

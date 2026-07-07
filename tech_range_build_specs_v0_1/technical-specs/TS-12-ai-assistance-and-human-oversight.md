@@ -4,7 +4,7 @@
 **Status:** Draft  
 **Last updated:** 2026-07-06  
 **Related specs:** TS-03 (Ingestion Pipeline), TS-04 (CCE), TS-10 (Observability), TS-11 (Advisory Workflow)  
-**Informs:** ADR-009 (AI Autonomy and Human Oversight Boundaries — not yet written)
+**Informs:** ADR-009 (AI Autonomy and Human Oversight Boundaries — see ADR-009 (Accepted))
 
 ---
 
@@ -55,13 +55,15 @@ The table below enumerates every location in the platform where AI assistance is
 | **Neighborhood classification** (CCE, TS-04) | Scores a candidate object against all active Neighborhoods using factor-weighted CCE logic | Ranked list of Neighborhood matches with per-factor scores | Yes — analyst must approve or swap the AI-selected primary Neighborhood | Yes — primary/secondary swaps and score adjustments >0.20 delta feed calibration |
 | **Domain Area classification** (CCE, TS-04) | Scores a candidate object against Domain Area taxonomy using factor-weighted CCE logic | Ranked list with per-factor scores | Yes — analyst must approve or adjust | Yes — same calibration signal logic as Neighborhood |
 | **Technology Type classification** (CCE, TS-04) | Applies Technology Type taxonomy scoring via CCE | Ranked list with per-factor scores | Yes — analyst must approve or adjust | Yes |
-| **Candidate Type classification** (CCE, TS-04) | Assigns Candidate Type (e.g., Emerging, Tracked, Watch) based on CCE scoring and signal recency | Single assignment with confidence score | Yes — analyst must approve; Candidate Type drives workflow routing | Yes — adjustments feed calibration for this axis independently |
+| **Candidate Type classification** (CCE, TS-04) | Assigns Candidate Type (e.g., prototype, advisory, partner_access, venture_scout) based on CCE scoring and signal recency | Single assignment with confidence score | Yes — analyst must approve; Candidate Type drives workflow routing | Yes — adjustments feed calibration for this axis independently |
 | **Boundary case ambiguity notes** (CCE, TS-04) | When top two classification matches are within a defined score proximity, generates an ambiguity note explaining the competing assignments | Text — displayed inline with classification output | No gate required for display; analyst decides whether to act on the note | No — ambiguity notes are not currently calibration sources |
 | **Rationale text drafting** (analyst workspace) | Drafts candidate rationale text for a classification decision based on the factor scores and signal evidence | Text — editable draft field, labeled as AI-generated | Yes — analyst must review and save; AI draft is not persisted until analyst action | Weak — substantial analyst edits to rationale text are logged |
 | **Observation text drafting** (analyst workspace) | Drafts a candidate Observation entry based on the associated signal cluster and current classification state | Text — editable draft field, labeled as AI-generated | Yes — analyst must review, edit, and explicitly save | Weak — logged but not currently fed to calibration model |
 | **Evidence chain summarization** (profile workspace) | Summarizes the signal evidence chain supporting a Technology Profile's classification, for display in the profile view | Text — read-only summary with source signal references | Yes — analyst must initiate this action explicitly; output is not auto-generated | No |
 | **Advisory section drafting** (advisory workflow, TS-11) | Drafts one or more sections of an Advisory document based on associated Technology Profiles and analyst-approved classifications | Text — editable draft sections, labeled as AI-generated | Yes — full Advisory publication requires human approval; AI draft does not trigger any downstream state change | No — advisory drafting quality is not currently a calibration source |
 | **Surprise analysis flagging** (signal archaeology) | Identifies signals that diverge significantly from expected classification patterns for an entity or Neighborhood, flagging them as potential surprises | Structured flag with explanation text | Yes — analyst must acknowledge or dismiss; flags do not auto-escalate | Weak — analyst dismissals and acknowledgments are logged |
+
+> **Tier assignments (ADR-009):** See ADR-009 for full Tier 1/2/3 assignments. Summary: signal ingestion, deduplication, and initial cluster formation are Tier 1 (fully autonomous). Non-boundary CCE classification results with confidence ≥ 0.75 are Tier 2 (suggest + lightweight approval). Boundary case classification, Advisory section pre-population (§3.7 above), profile field pre-population, and reclassification suggestions are Tier 3 (suggest + explicit human action required).
 
 ---
 
@@ -75,7 +77,7 @@ The following prohibitions are hard constraints. They are not configurable by ro
 
 - **Approve any match_set.** AI may set `review_status = 'system_assigned'` to indicate that a classification has been produced and is ready for analyst review. AI may not set `review_status = 'approved'`. Approval is an analyst action.
 
-- **Create a Technology Profile.** AI may suggest that a Profile should be created based on signal clustering or classification patterns. It may not create the Profile record. Profile creation requires analyst initiation.
+- **Create a committed Technology Profile record (pre-population of fields in a draft context is Tier 3 permitted, per ADR-009).** AI may suggest that a Profile should be created based on signal clustering or classification patterns, and may pre-populate fields in a draft context. It may not create the committed Profile record. Profile creation requires analyst initiation.
 
 - **Access or summarize sensitive content without analyst initiation.** Any AI text generation triggered by content in a sensitive or restricted workflow state must be explicitly initiated by the analyst working the record. There is no background processing of sensitive content.
 
@@ -240,4 +242,4 @@ The following decisions are required before TS-12 can be considered implementati
 
 ---
 
-*TS-12 Draft — for internal review. This spec informs ADR-009 (AI Autonomy and Human Oversight Boundaries). DECISION NEEDED items must be resolved before implementation begins.*
+*TS-12 Draft — for internal review. This spec informs ADR-009 (AI Autonomy and Human Oversight Boundaries — see ADR-009 (Accepted)). DECISION NEEDED items must be resolved before implementation begins.*

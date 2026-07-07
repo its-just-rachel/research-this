@@ -17,7 +17,7 @@ This is a **logical and physical data model** — it defines what exists in the 
 2. Evidence records are never hard-deleted. Use `archived_at` to retire.
 3. Match Set records are immutable once approved. Reclassification creates a new record and closes the old one.
 4. Every relationship between objects is typed, timestamped, and carries confidence.
-5. Temporal provenance is preserved with separate fields for event_time, capture_time, and processing timestamps.
+5. Temporal provenance is preserved with separate fields for event_time, captured_at, ingested_at, created_at, and valid_from per ADR-015.
 6. Sensitive evidence references use a pointer pattern — the sensitive content lives in an internal-only store; only a reference ID is stored here.
 
 ## Naming conventions
@@ -81,12 +81,37 @@ CREATE TABLE signals (
   source_ref          TEXT,
   -- stable identifier within the source system (e.g. arXiv ID, GitHub SHA, DOI)
 
-  -- Temporal provenance (separate fields — do not collapse)
+  -- Temporal provenance (five-timestamp standard per ADR-015 — do not collapse)
   event_time          TIMESTAMPTZ,
-  -- when the underlying event occurred (publication date, commit time, etc.)
-  -- null if unknown
-  captured_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  -- when Tech Range first ingested this signal
+  -- world-time: when the underlying event occurred (publication date, commit time, etc.)
+  -- NULL if unknown; see event_time_unknown / event_time_estimated flags below
+  captured_at         TIMESTAMPTZ NOT NULL,
+  -- source publication time: when the source published/released/indexed this signal
+  -- extracted from source metadata by the ingestion pipeline; never defaulted
+  ingested_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- pipeline receipt time: when Tech Range's ingestion pipeline first received this signal
+  -- (this is what earlier drafts called 'captured_at' — renamed to correct the semantic)
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- when the DB record was created
+  valid_from          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- classification/relationship validity start
+
+  -- event_time annotation flags (required when event_time is NULL or estimated)
+  event_time_unknown  BOOLEAN NOT NULL DEFAULT false,
+  -- true when event_time cannot be determined from any source
+  event_time_estimated BOOLEAN NOT NULL DEFAULT false,
+  -- true when event_time is inferred/estimated rather than confirmed from source metadata
+
+  CONSTRAINT event_time_flag_mutex CHECK (
+    NOT (event_time_unknown AND event_time_estimated)
+  ),
+  CONSTRAINT event_time_unknown_requires_null CHECK (
+    NOT (event_time_unknown AND event_time IS NOT NULL)
+  ),
+
+  -- Workflow state
+  signal_state        TEXT NOT NULL DEFAULT 'new'
+                      CHECK (signal_state IN ('new', 'triaged', 'grouped', 'archived', 'rejected')),
 
   title               TEXT,
   summary             TEXT,
@@ -118,14 +143,16 @@ CREATE TABLE signals (
   archived_at         TIMESTAMPTZ,
   archive_reason      TEXT,
 
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX signals_source_id_idx ON signals(source_id);
-CREATE INDEX signals_event_time_idx ON signals(event_time);
+CREATE INDEX signals_event_time_idx ON signals(event_time) WHERE event_time IS NOT NULL;
 CREATE INDEX signals_captured_at_idx ON signals(captured_at);
+CREATE INDEX signals_ingested_at_idx ON signals(ingested_at);
+CREATE INDEX signals_valid_from_idx ON signals(valid_from);
 CREATE INDEX signals_signal_type_idx ON signals(signal_type);
+CREATE INDEX signals_signal_state_idx ON signals(signal_state);
 ```
 
 ---
@@ -157,6 +184,7 @@ CREATE TABLE enrichments (
   -- AI-generated enrichments must be distinguishable from source facts
   confidence      NUMERIC(3,2) CHECK (confidence BETWEEN 0 AND 1),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
   is_retracted    BOOLEAN NOT NULL DEFAULT false,
   retracted_at    TIMESTAMPTZ,
   retraction_note TEXT
@@ -185,11 +213,17 @@ CREATE TABLE corroboration_groups (
   -- event_time of the most recent member signal
   member_count          INTEGER NOT NULL DEFAULT 0,
   -- denormalized count; updated by trigger
+
+  -- Workflow state (aligned with TS-06/ADR-008)
+  group_state           TEXT NOT NULL DEFAULT 'forming'
+                        CHECK (group_state IN ('forming', 'active', 'closed', 'dissolved')),
+
   review_status         TEXT NOT NULL DEFAULT 'system_created'
                         CHECK (review_status IN ('system_created', 'analyst_reviewed', 'approved', 'disputed')),
   created_by            TEXT NOT NULL,
   -- 'system:{process}' or user ID
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   is_archived           BOOLEAN NOT NULL DEFAULT false,
   archived_at           TIMESTAMPTZ
@@ -228,10 +262,16 @@ CREATE TABLE clusters (
   burst_detected_at TIMESTAMPTZ,
   burst_score     NUMERIC(3,2),
   -- relative acceleration in signal volume
+
+  -- Workflow state (aligned with TS-06/ADR-008)
+  cluster_state   TEXT NOT NULL DEFAULT 'candidate'
+                  CHECK (cluster_state IN ('candidate', 'active', 'promoted', 'dissolved')),
+
   review_status   TEXT NOT NULL DEFAULT 'system_created'
                   CHECK (review_status IN ('system_created', 'analyst_reviewed', 'approved', 'disputed')),
   created_by      TEXT NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   is_archived     BOOLEAN NOT NULL DEFAULT false,
   archived_at     TIMESTAMPTZ
@@ -363,7 +403,7 @@ CREATE TABLE match_sets (
   -- FK to users table (defined by auth layer)
   reviewed_at       TIMESTAMPTZ,
 
-  -- Temporal validity (immutable-but-supersedable pattern)
+  -- Temporal validity (immutable-but-supersedable pattern per ADR-005 / ADR-015)
   valid_from        TIMESTAMPTZ NOT NULL DEFAULT now(),
   superseded_at     TIMESTAMPTZ,
   superseded_by     UUID REFERENCES match_sets(id),
@@ -379,6 +419,32 @@ CREATE INDEX match_sets_boundary_idx ON match_sets(is_boundary_case) WHERE is_bo
 CREATE INDEX match_sets_review_status_idx ON match_sets(review_status);
 CREATE INDEX match_sets_active_idx ON match_sets(object_type, object_id, axis) WHERE is_active = true;
 -- Use this index for "current classification" lookups
+```
+
+---
+
+### `boundary_cases`
+
+Tracks objects flagged as boundary cases during classification — i.e., where the differentiation between the primary match and competing matches is below the threshold. Referenced by TS-04 (Comparative Classification Engine).
+
+```sql
+CREATE TABLE boundary_cases (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  match_set_id      UUID NOT NULL REFERENCES match_sets(id),
+  object_id         UUID NOT NULL,
+  object_type       TEXT NOT NULL,
+  axis              TEXT NOT NULL,
+  diff_strength     NUMERIC(3,2) NOT NULL,
+  primary_match     TEXT NOT NULL,
+  primary_score     NUMERIC(3,2) NOT NULL,
+  competing_matches JSONB NOT NULL DEFAULT '[]',
+  cce_reasoning     TEXT,
+  resolved          BOOLEAN NOT NULL DEFAULT false,
+  resolved_by       UUID,
+  resolved_at       TIMESTAMPTZ,
+  resolution_notes  TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 ```
 
 ---
@@ -399,6 +465,7 @@ CREATE TABLE observations (
   confidence       NUMERIC(3,2) CHECK (confidence BETWEEN 0 AND 1),
   created_by       TEXT NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   is_retracted     BOOLEAN NOT NULL DEFAULT false,
   retracted_at     TIMESTAMPTZ,
@@ -430,6 +497,7 @@ CREATE TABLE hypotheses (
   -- explicitly track contrary evidence
   created_by       TEXT NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   resolved_at      TIMESTAMPTZ,
   resolution_note  TEXT
@@ -459,11 +527,16 @@ CREATE TABLE tech_profiles (
   requester_note        TEXT,
   -- for intentional creation: why/who prompted this
 
-  -- Knowledge state
-  knowledge_state       TEXT NOT NULL DEFAULT 'candidate'
-                        CHECK (knowledge_state IN (
-                          'candidate', 'characterizing', 'active_research',
-                          'understood', 'monitored', 'dormant', 'archived'
+  -- Workflow state (enforced by WorkflowStateService; aligned with TS-06/ADR-008)
+  current_state         TEXT NOT NULL DEFAULT 'candidate'
+                        CHECK (current_state IN (
+                          'candidate', 'emerging', 'active', 'under_review', 'archived'
+                        )),
+
+  -- Evidence completeness (separate from workflow state — how well-understood the technology is)
+  evidence_completeness TEXT NOT NULL DEFAULT 'unknown'
+                        CHECK (evidence_completeness IN (
+                          'unknown', 'partial', 'known', 'superseded'
                         )),
 
   -- External technology state
@@ -498,6 +571,7 @@ CREATE TABLE tech_profiles (
                         CHECK (review_status IN ('candidate', 'active', 'under_review', 'archived')),
   created_by            TEXT NOT NULL,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   archived_at           TIMESTAMPTZ,
   archive_reason        TEXT,
@@ -506,7 +580,8 @@ CREATE TABLE tech_profiles (
   recommended_next_step TEXT
 );
 
-CREATE INDEX tech_profiles_knowledge_state_idx ON tech_profiles(knowledge_state);
+CREATE INDEX tech_profiles_current_state_idx ON tech_profiles(current_state);
+CREATE INDEX tech_profiles_evidence_completeness_idx ON tech_profiles(evidence_completeness);
 CREATE INDEX tech_profiles_review_status_idx ON tech_profiles(review_status);
 CREATE INDEX tech_profiles_fidelity_availability_idx ON tech_profiles(fidelity_level, availability_level);
 ```
@@ -564,7 +639,8 @@ CREATE TABLE tech_evaluations (
                       CHECK (status IN ('draft', 'submitted', 'approved', 'superseded')),
   approved_by         TEXT,
   approved_at         TIMESTAMPTZ,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
@@ -607,17 +683,17 @@ CREATE TABLE solution_candidates (
   decision_owner        TEXT,
   recommended_next_step TEXT,
 
-  -- Lifecycle
+  -- Lifecycle state (aligned with TS-06/ADR-008)
   status                TEXT NOT NULL DEFAULT 'draft'
                         CHECK (status IN (
-                          'draft', 'under_review', 'approved', 'active',
-                          'complete', 'converted', 'returned_to_research', 'archived'
+                          'draft', 'under_review', 'approved', 'handed_off', 'rejected'
                         )),
   converted_to          TEXT CHECK (converted_to IN (
                           'prototype', 'advisory', 'partner_access', 'venture_scout', null
                         )),
   created_by            TEXT NOT NULL,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
   archived_at           TIMESTAMPTZ,
   archive_reason        TEXT
@@ -652,10 +728,12 @@ CREATE TABLE prototypes (
   outcome               TEXT CHECK (outcome IN ('validated', 'invalidated', 'inconclusive', 'abandoned')),
   findings_summary      TEXT,
 
-  status                TEXT NOT NULL DEFAULT 'planned'
-                        CHECK (status IN ('planned', 'in_progress', 'complete', 'abandoned')),
+  -- Lifecycle state (aligned with TS-06/ADR-008)
+  status                TEXT NOT NULL DEFAULT 'scoped'
+                        CHECK (status IN ('scoped', 'in_progress', 'complete', 'abandoned')),
   created_by            TEXT NOT NULL,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
@@ -681,8 +759,13 @@ CREATE TABLE findings (
   finding_type          TEXT CHECK (finding_type IN ('validation', 'invalidation', 'learning', 'risk', 'opportunity')),
   confidence            NUMERIC(3,2) CHECK (confidence BETWEEN 0 AND 1),
 
+  -- Lifecycle state (aligned with TS-06/ADR-008)
+  status                TEXT NOT NULL DEFAULT 'draft'
+                        CHECK (status IN ('draft', 'peer_review', 'published', 'withdrawn')),
+
   created_by            TEXT NOT NULL,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
@@ -722,14 +805,15 @@ CREATE TABLE advisories (
   overall_confidence    NUMERIC(3,2) CHECK (overall_confidence BETWEEN 0 AND 1),
   confidence_rationale  TEXT NOT NULL,
 
-  -- Governance
-  status                TEXT NOT NULL DEFAULT 'draft'
-                        CHECK (status IN ('draft', 'under_review', 'approved', 'published', 'superseded', 'archived')),
+  -- Lifecycle state (aligned with TS-06/ADR-008)
+  status                TEXT NOT NULL DEFAULT 'assembling'
+                        CHECK (status IN ('assembling', 'review', 'approved', 'published', 'withdrawn')),
   created_by            TEXT NOT NULL,
   reviewed_by           TEXT,
   approved_by           TEXT,
   published_by          TEXT,
   created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from            TIMESTAMPTZ NOT NULL DEFAULT now(),
   reviewed_at           TIMESTAMPTZ,
   approved_at           TIMESTAMPTZ,
   published_at          TIMESTAMPTZ,
@@ -746,34 +830,36 @@ CREATE TABLE advisories (
 
 ### `object_relationships`
 
-Generic typed relationship table. Supports all durable relationships between platform objects.
+Generic typed relationship table. Supports all durable relationships between platform objects. Uses a unified relationship type vocabulary merging structural/hierarchical and evidence graph types.
 
 ```sql
 CREATE TABLE object_relationships (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  from_id         UUID NOT NULL,
-  from_type       TEXT NOT NULL,
-  to_id           UUID NOT NULL,
-  to_type         TEXT NOT NULL,
+  source_id       UUID NOT NULL,
+  source_type     TEXT NOT NULL,
+  target_id       UUID NOT NULL,
+  target_type     TEXT NOT NULL,
   relationship_type TEXT NOT NULL CHECK (relationship_type IN (
-                    'contains', 'related_to', 'contributes_to',
-                    'assigned_to', 'produces', 'parent_of', 'child_of',
-                    'enables', 'competing_with', 'dependent_on',
-                    'superseding', 'derivative_of', 'co_occurring_with'
+                    'corroborates', 'contradicts', 'clusters_into', 'classified_as',
+                    'evidences', 'hypothesizes', 'evaluated_by', 'precedes', 'supersedes',
+                    'sourced_from', 'enriched_by',
+                    'contains', 'related_to', 'contributes_to', 'assigned_to',
+                    'produces', 'parent_of', 'child_of', 'enables', 'dependent_on'
                   )),
   confidence      NUMERIC(3,2) CHECK (confidence BETWEEN 0 AND 1),
+  evidence_basis  UUID[] NOT NULL DEFAULT '{}',
+  valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  superseded_at   TIMESTAMPTZ,
+  superseded_by   UUID REFERENCES object_relationships(id),
+  review_status   TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (review_status IN ('pending', 'accepted', 'challenged', 'retracted')),
   rationale       TEXT,
-  evidence_basis  UUID[],
   created_by      TEXT NOT NULL,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  review_status   TEXT NOT NULL DEFAULT 'active'
-                  CHECK (review_status IN ('active', 'disputed', 'retracted')),
-  retracted_at    TIMESTAMPTZ,
-  retraction_note TEXT
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX obj_rel_from_idx ON object_relationships(from_type, from_id);
-CREATE INDEX obj_rel_to_idx ON object_relationships(to_type, to_id);
+CREATE INDEX obj_rel_source_idx ON object_relationships(source_type, source_id);
+CREATE INDEX obj_rel_target_idx ON object_relationships(target_type, target_id);
 CREATE INDEX obj_rel_type_idx ON object_relationships(relationship_type);
 ```
 
@@ -801,6 +887,7 @@ CREATE TABLE emerging_records (
   reviewed_by     TEXT,
   reviewed_at     TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
@@ -811,20 +898,22 @@ CREATE TABLE emerging_records (
 
 ## Temporal provenance summary
 
-All major tables preserve the following timestamps where applicable:
+All major tables preserve the following timestamps per the five-timestamp standard (ADR-015):
 
 | Timestamp field | Meaning |
 |---|---|
-| `event_time` | When the underlying real-world event occurred |
-| `captured_at` | When Tech Range first ingested the object |
+| `event_time` | When the underlying real-world event occurred (world-time; nullable) |
+| `captured_at` | When the source published/released/indexed the signal (source publication time) |
+| `ingested_at` | When Tech Range's ingestion pipeline first received the raw signal (pipeline receipt time) |
 | `created_at` | When the database record was created |
+| `valid_from` | Classification/relationship validity start (immutable-but-supersedable records) |
 | `updated_at` | Last modification timestamp |
 | `reviewed_at` | When an analyst reviewed the object |
 | `approved_at` | When the object was formally approved |
 | `archived_at` | When the object was retired |
-| `valid_from` / `superseded_at` | Match Set temporal validity window |
+| `superseded_at` | When a supersedable record was replaced by a newer version |
 
-These distinct timestamps support signal archaeology, surprise analysis, and confidence review.
+The gap `captured_at - event_time` measures **source latency** (how long after the world event the source noticed it). The gap `ingested_at - captured_at` measures **pipeline latency** (how current the platform's crawl coverage is). The gap `ingested_at - event_time` is the **total signal latency**. These distinct timestamps support signal archaeology, surprise analysis, and confidence review. See ADR-015 for the authoritative definition.
 
 ---
 
@@ -841,6 +930,8 @@ Key query patterns this model must support efficiently:
 | Signal burst detection | Aggregate on `signals.event_time` by `cluster_id`, windowed by time |
 | Classification history for an object | `match_sets_object_idx` + order by `valid_from` |
 | Advisories in draft pending approval | `status` filter on advisories |
+| Late-signal detection | Filter `signals` on `ingested_at - event_time > INTERVAL '30 days'` WHERE event_time IS NOT NULL |
+| Point-in-time knowledge reconstruction | Filter `signals` on `ingested_at < $timestamp`; filter `match_sets` on `valid_from <= $timestamp AND (superseded_at IS NULL OR superseded_at > $timestamp)` |
 
 Full-text search on signal summaries and profile descriptions should use PostgreSQL `tsvector` / `tsquery` or an external search index (Elasticsearch, pg_vector for semantic search). This is deferred to TS-07.
 

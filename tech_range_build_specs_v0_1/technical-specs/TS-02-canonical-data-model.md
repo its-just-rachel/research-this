@@ -3,7 +3,7 @@
 **Version:** v0.1  
 **Status:** Draft  
 **Date:** 2026-07-06  
-**Depends on:** ADR-002 (storage model), ADR-003 (evidence graph), ADR-005 (comparative classification)
+**Depends on:** ADR-002 (storage model), ADR-003 (evidence graph), ADR-005 (comparative classification), ADR-006 (availability sub-dimensions)
 
 ## Purpose
 
@@ -50,6 +50,16 @@ CREATE TABLE sources (
   credibility_score NUMERIC(3,2) CHECK (credibility_score BETWEEN 0 AND 1),
   -- credibility_score: 0.0–1.0, influences Signal confidence upstream
   -- populated by source evaluation process (see ADR-014)
+
+  -- ADR-014 credibility axis columns
+  reliability               NUMERIC(3,2),          -- analyst override (NULL = use system value)
+  domain_relevance          NUMERIC(3,2),          -- analyst override
+  recency_weight            NUMERIC(3,2),          -- analyst override
+  reliability_system        NUMERIC(3,2),          -- system-computed value (preserved on override)
+  domain_relevance_system   NUMERIC(3,2),          -- system-computed value
+  recency_weight_system     NUMERIC(3,2),          -- system-computed value
+  last_signal_at            TIMESTAMPTZ,           -- most recent signal captured_at (used for recency decay)
+
   coverage_areas    TEXT[],
   -- free-text tags describing topical/geographic coverage
   refresh_cadence   TEXT,
@@ -61,7 +71,14 @@ CREATE TABLE sources (
   -- if true, source identity may not appear in public-safe Advisories
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  archived_at       TIMESTAMPTZ
+  archived_at       TIMESTAMPTZ,
+
+  -- Ingestion tracking
+  last_fetched_at       TIMESTAMPTZ,
+  fetch_failure_count   INTEGER NOT NULL DEFAULT 0,
+  poll_interval_minutes INTEGER NOT NULL DEFAULT 1440,  -- default: once per day
+  source_status         TEXT NOT NULL DEFAULT 'active'
+                        CHECK (source_status IN ('active', 'paused', 'health_alert', 'retired'))
 );
 ```
 
@@ -115,9 +132,15 @@ CREATE TABLE signals (
 
   title               TEXT,
   summary             TEXT,
-  raw_content_ref     TEXT,
-  -- reference to raw content storage (S3 key, blob ID, etc.)
-  -- raw content is not stored inline
+
+  -- Ingestion metadata
+  ingestion_mode        TEXT NOT NULL DEFAULT 'automated_pull'
+                        CHECK (ingestion_mode IN ('automated_pull', 'analyst_submitted', 'intentional_injection')),
+  raw_content_ref       TEXT,                    -- pointer/key to raw content in external storage (S3, blob); NOT inline
+  content_hash          TEXT,                    -- SHA-256 of raw content for deduplication
+  model_version         TEXT,                    -- AI model version used for extraction (e.g. 'extraction:v1.2')
+  ai_generated          BOOLEAN NOT NULL DEFAULT false,  -- true if summary/entities were AI-generated
+  created_by            TEXT NOT NULL,           -- analyst user ID or 'system' for automated ingestion
 
   -- Extraction metadata
   extracted_entities  JSONB,
@@ -127,11 +150,26 @@ CREATE TABLE signals (
   extraction_confidence NUMERIC(3,2) CHECK (extraction_confidence BETWEEN 0 AND 1),
   -- confidence in the accuracy of entity extraction and summary
 
-  signal_type         TEXT CHECK (signal_type IN (
-                        'paper', 'model_release', 'code_commit', 'star_spike',
-                        'funding', 'patent', 'news', 'benchmark', 'product_launch',
-                        'conference_talk', 'vendor_blog', 'standards_update',
-                        'regulatory', 'job_posting', 'acquisition', 'other'
+  signal_type         TEXT NOT NULL CHECK (signal_type IN (
+                        'paper',              -- academic or technical paper
+                        'model_release',      -- AI/ML model release
+                        'product_launch',     -- product or service launch
+                        'code_commit',        -- significant open-source commit or release
+                        'benchmark',          -- performance benchmark or evaluation result
+                        'funding',            -- investment, grant, or acquisition funding
+                        'acquisition',        -- company acquisition or merger
+                        'partnership',        -- strategic partnership or collaboration
+                        'regulation',         -- regulatory action, policy, or standard
+                        'threat_report',      -- threat intelligence or adversarial activity report
+                        'patent',             -- patent filing or grant
+                        'job_posting',        -- hiring signal (e.g. specialized roles)
+                        'conference_talk',    -- conference presentation or keynote
+                        'vendor_blog',        -- vendor announcement or technical blog
+                        'news',               -- general news article
+                        'star_spike',         -- GitHub or similar repository activity spike
+                        'standards_update',   -- standards body update (ISO, NIST, IEEE, etc.)
+                        'intentional_injection', -- analyst-created signal without source URL
+                        'other'               -- does not fit any above category
                       )),
 
   is_sensitive        BOOLEAN NOT NULL DEFAULT false,
@@ -542,15 +580,28 @@ CREATE TABLE tech_profiles (
   -- External technology state
   fidelity_level        INTEGER CHECK (fidelity_level BETWEEN 0 AND 5),
   fidelity_rationale    TEXT,
-  fidelity_assessed_at  TIMESTAMPTZ,
-  fidelity_confidence   NUMERIC(3,2) CHECK (fidelity_confidence BETWEEN 0 AND 1),
   fidelity_trend        TEXT CHECK (fidelity_trend IN ('rising', 'stable', 'declining', 'unknown')),
 
   availability_level    INTEGER CHECK (availability_level BETWEEN 0 AND 5),
+  -- composite availability score: min(market_availability, firm_access) per ADR-006
   availability_rationale TEXT,
-  availability_assessed_at TIMESTAMPTZ,
-  availability_confidence NUMERIC(3,2) CHECK (availability_confidence BETWEEN 0 AND 1),
   availability_trend    TEXT CHECK (availability_trend IN ('rising', 'stable', 'declining', 'unknown')),
+
+  -- Availability sub-dimensions (ADR-006)
+  market_availability      INTEGER CHECK (market_availability BETWEEN 0 AND 5),
+  firm_access              INTEGER CHECK (firm_access BETWEEN 0 AND 5),
+  deployment_readiness     INTEGER CHECK (deployment_readiness BETWEEN 0 AND 5),
+  procurement_readiness    INTEGER CHECK (procurement_readiness BETWEEN 0 AND 5),
+
+  -- Per-dimension confidence (Platform Principle P19)
+  fidelity_confidence      NUMERIC(3,2) CHECK (fidelity_confidence BETWEEN 0 AND 1),
+  availability_confidence  NUMERIC(3,2) CHECK (availability_confidence BETWEEN 0 AND 1),
+
+  -- Reassessment tracking
+  fidelity_assessed_at     TIMESTAMPTZ,
+  availability_assessed_at TIMESTAMPTZ,
+  previous_fidelity_level  INTEGER CHECK (previous_fidelity_level BETWEEN 0 AND 5),
+  previous_availability_level INTEGER CHECK (previous_availability_level BETWEEN 0 AND 5),
 
   -- Signal archaeology
   archaeology_status    TEXT DEFAULT 'not_started'
@@ -912,6 +963,8 @@ All major tables preserve the following timestamps per the five-timestamp standa
 | `approved_at` | When the object was formally approved |
 | `archived_at` | When the object was retired |
 | `superseded_at` | When a supersedable record was replaced by a newer version |
+
+**Availability sub-dimensions (ADR-006):** `availability_level` is a composite score defined as `min(market_availability, firm_access)`. It is further decomposed into four sub-dimensions stored on `tech_profiles`: `market_availability`, `firm_access`, `deployment_readiness`, and `procurement_readiness` (each 0–5). Per-dimension confidence scores (`fidelity_confidence`, `availability_confidence`) and reassessment tracking fields (`fidelity_assessed_at`, `availability_assessed_at`, `previous_fidelity_level`, `previous_availability_level`) are also stored on the profile per Platform Principle P19.
 
 The gap `captured_at - event_time` measures **source latency** (how long after the world event the source noticed it). The gap `ingested_at - captured_at` measures **pipeline latency** (how current the platform's crawl coverage is). The gap `ingested_at - event_time` is the **total signal latency**. These distinct timestamps support signal archaeology, surprise analysis, and confidence review. See ADR-015 for the authoritative definition.
 
